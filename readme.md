@@ -36,7 +36,6 @@ This tool allows you to:
 ### Python packages
 Install dependencies with:
 
-```bash
 pip install -r requirements.txt
 # 2️⃣ `requirements.txt`
 
@@ -49,6 +48,13 @@ numpy
 pillow
 
 ---
+##External dependency
+
+ffmpeg must be installed and available on PATH
+
+Verify:
+
+ffmpeg -version
 
 ## Folder Structure
 
