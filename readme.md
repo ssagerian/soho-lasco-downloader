@@ -32,9 +32,14 @@ This tool allows you to:
 ## Folder Structure
 
 Downloads are saved under:
-downloads/
-└── YYYYMMDD_LASCO_cX_format/
-├── image files...
-├── _png_frames/ (FITS only)
-├── ffmpeg_list.txt
-└── YYYYMMDD_LASCO_cX_format_10fps.mp4
+ 
+ downloads/
+  └── YYYYMMDD_LASCO_cX_format/
+  
+  ├── image files...
+  
+  ├── _png_frames/ (FITS only)
+  
+  ├── ffmpeg_list.txt
+  
+  └── YYYYMMDD_LASCO_cX_format_10fps.mp4
