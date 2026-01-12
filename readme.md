@@ -37,7 +37,6 @@ This tool allows you to:
 Install dependencies with:
 
 pip install -r requirements.txt
-# 2️⃣ `requirements.txt`
 
 Paste this into `requirements.txt`:
 
@@ -48,7 +47,7 @@ numpy
 pillow
 
 ---
-##External dependency
+###External dependency
 
 ffmpeg must be installed and available on PATH
 
