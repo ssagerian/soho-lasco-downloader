@@ -28,18 +28,45 @@ This tool allows you to:
 - Deterministic folder and video naming
 
 ---
+## Requirements
+
+### Python
+- Python **3.10+** recommended
+
+### Python packages
+Install dependencies with:
+
+```bash
+pip install -r requirements.txt
+# 2️⃣ `requirements.txt`
+
+Paste this into `requirements.txt`:
+
+```text
+requests
+astropy
+numpy
+pillow
+
+---
 
 ## Folder Structure
 
 Downloads are saved under:
  
  downloads/
-  └── YYYYMMDD_LASCO_cX_format/
+ 
+└── YYYYMMDD_LASCO_cX_format/
   
-  ├── image files...
+      ├── image files...
   
-  ├── _png_frames/ (FITS only)
+      ├── _png_frames/ (FITS only)
   
-  ├── ffmpeg_list.txt
+      ├── ffmpeg_list.txt
   
-  └── YYYYMMDD_LASCO_cX_format_10fps.mp4
+      └── YYYYMMDD_LASCO_cX_format_10fps.mp4
+
+# Disclaimer
+
+This project is not affiliated with NASA or ESA.
+All data is retrieved from publicly available SOHO LASCO archives.
