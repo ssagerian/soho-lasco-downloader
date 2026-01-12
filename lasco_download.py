@@ -246,6 +246,7 @@ class CameraUrlTool(tk.Tk):
         super().__init__()
         self.title("SOHO LASCO URL Builder")
         self.resizable(False, False)
+        self._build_menu()
 
         today = date.today()
         self.camera_options = ["C2", "C3"]
@@ -269,6 +270,28 @@ class CameraUrlTool(tk.Tk):
         self._build_ui()
         self._refresh_day_options()
         self._set_url_preview()
+
+    def on_about(self):
+        messagebox.showinfo(
+            "About",
+            "SOHO LASCO Image Downloader\n\n"
+            "A tool for downloading and creating videos from SOHO LASCO data.\n\n"
+            "Author: Steven Sagerian\n"
+            "Email: steven.sagerian@gmail.com\n\n"
+            "Version: 1.0.0\n\n"
+            "GitHub: https://github.com/ssagerian/soho-lasco-downloader\n"
+
+        )
+
+    def _build_menu(self):
+        menubar = tk.Menu(self)
+
+        about_menu = tk.Menu(menubar, tearoff=0)
+        about_menu.add_command(label="About", command=self.on_about)
+
+        menubar.add_cascade(label="About", menu=about_menu)
+
+        self.config(menu=menubar)
 
     def _build_ui(self):
         pad = {"padx": 8, "pady": 6}
