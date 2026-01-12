@@ -48,7 +48,8 @@ pillow
 ```
 
 ---
-###External dependency
+
+### External dependency
 
 ffmpeg must be installed and available on PATH
 
