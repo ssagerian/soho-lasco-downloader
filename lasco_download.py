@@ -1,3 +1,6 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 import os
 import threading
 from pathlib import Path
@@ -14,8 +17,7 @@ from PIL import Image
 import requests
 from html.parser import HTMLParser
 
-
-DOWNLOAD_ROOT = Path.cwd() / "downloads"   # change if you want somewhere else
+DOWNLOAD_ROOT = Path.cwd() / "downloads"  # change if you want somewhere else
 
 
 def write_concat_list(files_in_order: list[Path], list_path: Path) -> None:
@@ -37,21 +39,31 @@ def build_url(camera_type: str, image_size: str, image_format: str, yyyy: int, m
     jpg:
       https://soho.nascom.nasa.gov/data/REPROCESSING/Completed/{YEAR}/{camera}/{YYYYMMDD}/
 
-    fits:
+    realtime fits:
       https://umbra.nascom.nasa.gov/pub/lasco/lastimage/level_05/{YYMMDD}/{camera}/
+
+    archive fits:
+      https://umbra.nascom.nasa.gov/pub/lasco_level05/{YYMMDD}/{camera}/
     """
     cam = camera_type.lower()  # server expects lowercase
+
     if image_format == "jpg":
         return (
             "https://soho.nascom.nasa.gov/data/REPROCESSING/Completed/"
             f"{yyyy:04d}/{cam}/{yyyy:04d}{mm:02d}{dd:02d}/"
         )
-    if image_format == "fits":
+
+    # Common logic for FITS (both realtime and archive use YYMMDD)
+    if "fits" in image_format:
         yy = yyyy % 100
-        return (
-            "https://umbra.nascom.nasa.gov/pub/lasco/lastimage/level_05/"
-            f"{yy:02d}{mm:02d}{dd:02d}/{cam}/"
-        )
+        subdir = f"{yy:02d}{mm:02d}{dd:02d}/{cam}/"
+
+        if image_format == "realtime fits":
+            return f"https://umbra.nascom.nasa.gov/pub/lasco/lastimage/level_05/{subdir}"
+
+        if image_format == "archive fits":
+            return f"https://umbra.nascom.nasa.gov/pub/lasco_level05/{subdir}"
+
     raise ValueError(f"Unsupported image format: {image_format}")
 
 
@@ -60,16 +72,18 @@ def build_download_subfolder(camera_type: str, image_format: str, yyyy: int, mm:
     Option B folder naming:
       YYYYMMDD_LASCO_{camera}_{format}
     Example:
-      20260111_LASCO_c3_jpg
+      20260111_LASCO_c3_archive_fits
     """
     cam = camera_type.lower()
     yyyymmdd = f"{yyyy:04d}{mm:02d}{dd:02d}"
-    fmt = image_format.lower()
+    # Replace spaces with underscores for cleaner folder names (e.g. "archive fits" -> "archive_fits")
+    fmt = image_format.lower().replace(" ", "_")
     return f"{yyyymmdd}_LASCO_{cam}_{fmt}"
 
 
 class HrefParser(HTMLParser):
     """Minimal parser to extract href values from anchor tags."""
+
     def __init__(self):
         super().__init__()
         self.hrefs: list[str] = []
@@ -80,8 +94,6 @@ class HrefParser(HTMLParser):
         for k, v in attrs:
             if k.lower() == "href" and v:
                 self.hrefs.append(v)
-
-from pathlib import Path
 
 
 def filename_matches_size(name: str, size: str) -> bool:
@@ -94,7 +106,7 @@ def filename_matches_size(name: str, size: str) -> bool:
       *_512.fts, *_1024.fts
       ..._512... etc
     """
-    stem = Path(name).stem.lower()   # filename without extension
+    stem = Path(name).stem.lower()  # filename without extension
     size = str(size)
 
     # Most common: token separated by underscores
@@ -153,13 +165,6 @@ def download_file(url: str, dest_path: Path, timeout_s: int = 30) -> None:
                     f.write(chunk)
 
 
-def write_concat_list(files_in_order: list[Path], list_path: Path) -> None:
-    list_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(list_path, "w", encoding="utf-8") as f:
-        for p in files_in_order:
-            f.write(f"file '{p.as_posix()}'\n")
-
-
 def run_ffmpeg_concat(list_txt: Path, output_mp4: Path, fps: int = 30) -> None:
     cmd = [
         "ffmpeg",
@@ -198,137 +203,19 @@ def fits_to_png(fits_path: Path, png_path: Path) -> None:
     Image.fromarray(img8).save(png_path)
 
 
-def process_fits_sequence_to_png(
-    dest_dir: Path,
-    filenames_in_order: list[str],
-    out_subdir_name: str = "_processed_png_frames",
-    window_radius: int = 2,
-    brightness_boost: float = 1.15,
-) -> tuple[int, int, int, Path]:
-    """
-    Implements the same processing logic as your standalone script:
-    - load frames
-    - per-frame percentile normalization (1–99)
-    - rolling temporal median background subtraction over a window (radius=2 => 5 frames)
-    - clip negatives
-    - residual percentile stretch (2–98)
-    - small brightness boost
-    - save as PNG
-
-    Returns: (found_fits, saved_png, skipped_existing, out_dir)
-    """
-    out_dir = dest_dir / out_subdir_name
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    # Keep only FITS-like names, preserve order
-    fits_names = [n for n in filenames_in_order if n.lower().endswith((".fits", ".fts"))]
-    found_fits = len(fits_names)
-    if found_fits == 0:
-        return (0, 0, 0, out_dir)
-
-    images = []
-    valid_names = []
-    skipped_existing = 0
-
-    # --- load frames (skip those already processed) ---
-    for name in fits_names:
-        fits_path = dest_dir / name
-        if not fits_path.exists():
-            continue
-
-        out_name = Path(name).with_suffix(".png").name
-        out_path = out_dir / out_name
-        if out_path.exists() and out_path.stat().st_size > 0:
-            skipped_existing += 1
-            continue
-
-        with fits.open(fits_path, memmap=False) as hdul:
-            # Prefer HDU0; fallback to HDU1 if needed
-            data = None
-            if len(hdul) > 0 and getattr(hdul[0], "data", None) is not None:
-                data = hdul[0].data
-            elif len(hdul) > 1 and getattr(hdul[1], "data", None) is not None:
-                data = hdul[1].data
-            else:
-                continue
-
-        data = np.asarray(data, dtype=np.float32)
-        while data.ndim > 2:  # squash any extra dimensions
-            data = data[0]
-
-        data = np.nan_to_num(data, nan=0.0, posinf=0.0, neginf=0.0)
-
-        images.append(data)
-        valid_names.append(name)
-
-    if not images:
-        return (found_fits, 0, skipped_existing, out_dir)
-
-    images = np.array(images, dtype=np.float32)
-
-    # --- per-frame normalization (1–99 percentile) ---
-    norm_images = []
-    for img in images:
-        p1 = np.percentile(img, 1)
-        p99 = np.percentile(img, 99)
-        if p99 <= p1:
-            norm = np.zeros_like(img, dtype=np.float32)
-        else:
-            norm = (img - p1) / (p99 - p1)
-        norm = np.clip(norm, 0, 1)
-        norm_images.append(norm)
-
-    norm_images = np.array(norm_images, dtype=np.float32)
-
-    # --- rolling median background subtraction + stretch ---
-    saved = 0
-    n = len(norm_images)
-
-    for i in range(n):
-        img = norm_images[i]
-
-        start = max(0, i - window_radius)
-        end = min(n, i + window_radius + 1)
-
-        background = np.median(norm_images[start:end], axis=0)
-
-        residual = img - background
-        residual[residual < 0] = 0
-
-        p2 = np.percentile(residual, 2)
-        p98 = np.percentile(residual, 98)
-        if p98 <= p2:
-            stretched = np.zeros_like(residual, dtype=np.float32)
-        else:
-            stretched = (residual - p2) / (p98 - p2)
-
-        stretched = np.clip(stretched, 0, 1)
-        stretched *= brightness_boost
-        stretched = np.clip(stretched, 0, 1)
-
-        img8 = (stretched * 255).astype(np.uint8)
-
-        out_name = Path(valid_names[i]).with_suffix(".png").name
-        out_path = out_dir / out_name
-        Image.fromarray(img8).save(out_path)
-        saved += 1
-
-    return (found_fits, saved, skipped_existing, out_dir)
-
-
 def make_video_from_download(dest_dir: Path, filenames_in_order: list[str],
                              camera_type: str, fmt: str, yyyy: int, mm: int, dd: int,
-                             fps: int = 30,
-                             use_processed_fits: bool = False) -> Path:
+                             fps: int = 30) -> Path:
     fmt = fmt.lower().strip()
     yyyymmdd = f"{yyyy:04d}{mm:02d}{dd:02d}"
     cam = camera_type.lower()
-    fmt = fmt.lower().strip()
-    video_name = f"{yyyymmdd}_LASCO_{cam}_{fmt}_{fps}fps.mp4"
+
+    safe_fmt = fmt.replace(" ", "_")
+    video_name = f"{yyyymmdd}_LASCO_{cam}_{safe_fmt}_{fps}fps.mp4"
     video_path = dest_dir / video_name
     list_txt = dest_dir / "ffmpeg_list.txt"
 
-    if fmt == "jpg":
+    if "jpg" in fmt:
         frames = [dest_dir / name for name in filenames_in_order]
         frames = [p for p in frames if p.exists()]
         if not frames:
@@ -337,43 +224,7 @@ def make_video_from_download(dest_dir: Path, filenames_in_order: list[str],
         run_ffmpeg_concat(list_txt, video_path, fps=fps)
         return video_path
 
-    if fmt == "fits":
-        # Option: use the "processed" background-subtracted frames
-        if use_processed_fits:
-            proc_dir = dest_dir / "_processed_png_frames"
-            proc_dir.mkdir(parents=True, exist_ok=True)
-
-            # Build list of expected processed PNGs in the same order as selection
-            png_frames: list[Path] = []
-            missing_any = False
-
-            for name in filenames_in_order:
-                fits_path = dest_dir / name
-                if not fits_path.exists():
-                    continue
-                png_name = Path(name).with_suffix(".png").name
-                png_path = proc_dir / png_name
-                if not png_path.exists():
-                    missing_any = True
-                png_frames.append(png_path)
-
-            # If any are missing, generate them using your processing pipeline
-            if missing_any:
-                # This uses the same algorithm as your standalone script
-                found_fits, saved, skipped, out_dir = process_fits_sequence_to_png(
-                    dest_dir, filenames_in_order, out_subdir_name="_processed_png_frames"
-                )
-
-            # Re-check frames that actually exist
-            png_frames = [p for p in png_frames if p.exists()]
-            if not png_frames:
-                raise RuntimeError("No processed PNG frames exist to build video. Try running Process FITS first.")
-
-            write_concat_list(png_frames, list_txt)
-            run_ffmpeg_concat(list_txt, video_path, fps=fps)
-            return video_path
-
-        # Default behavior: simple FITS→PNG conversion into _png_frames
+    if "fits" in fmt:
         conv_dir = dest_dir / "_png_frames"
         conv_dir.mkdir(parents=True, exist_ok=True)
 
@@ -386,12 +237,6 @@ def make_video_from_download(dest_dir: Path, filenames_in_order: list[str],
             png_path = conv_dir / png_name
             fits_to_png(fits_path, png_path)
             png_frames.append(png_path)
-
-        if not png_frames:
-            raise RuntimeError("No FITS frames could be converted to PNG.")
-        write_concat_list(png_frames, list_txt)
-        run_ffmpeg_concat(list_txt, video_path, fps=fps)
-        return video_path
 
         if not png_frames:
             raise RuntimeError("No FITS frames could be converted to PNG.")
@@ -412,7 +257,9 @@ class CameraUrlTool(tk.Tk):
         today = date.today()
         self.camera_options = ["C2", "C3"]
         self.size_options = ["512", "1024"]
-        self.format_options = ["fits", "jpg"]
+
+        self.format_options = ["jpg", "realtime fits", "archive fits"]
+
         self.fps_options = ["60", "30", "24", "15", "10", "5", "2", "1"]
         self.var_fps = tk.StringVar(value="10")  # default slow-ish, good for LASCO
 
@@ -425,14 +272,12 @@ class CameraUrlTool(tk.Tk):
         self.var_year = tk.StringVar(value=str(today.year))
         self.var_month = tk.StringVar(value=f"{today.month:02d}")
         self.var_day = tk.StringVar(value=f"{today.day:02d}")
-        self.var_use_processed = tk.BooleanVar(value=True)  # default ON for FITS
 
         self._downloading = False
 
         self._build_ui()
         self._refresh_day_options()
         self._set_url_preview()
-        self._update_format_dependent_buttons()
 
     def on_about(self):
         messagebox.showinfo(
@@ -441,7 +286,7 @@ class CameraUrlTool(tk.Tk):
             "A tool for downloading and creating videos from SOHO LASCO data.\n\n"
             "Author: Steven Sagerian\n"
             "Email: steven.sagerian@gmail.com\n\n"
-            "Version: 1.0.0\n\n"
+            "Version: 1.1.0\n\n"
             "GitHub: https://github.com/ssagerian/soho-lasco-downloader\n"
 
         )
@@ -471,7 +316,7 @@ class CameraUrlTool(tk.Tk):
         add_row(0, "Camera type", self.cmb_camera)
 
         self.cmb_size = ttk.Combobox(frm, textvariable=self.var_size, values=self.size_options, state="readonly")
-        add_row(1, "Image size", self.cmb_size)
+        add_row(1, "Image size (jpg)", self.cmb_size)
 
         self.cmb_format = ttk.Combobox(frm, textvariable=self.var_format, values=self.format_options, state="readonly")
         add_row(2, "Image format", self.cmb_format)
@@ -520,21 +365,13 @@ class CameraUrlTool(tk.Tk):
                                     width=6)
         self.cmb_fps.grid(row=0, column=1)
 
-        # Use-processed checkbox (only meaningful for FITS)
-        self.chk_use_processed = ttk.Checkbutton(
-            fps_row,
-            text="Use processed frames",
-            variable=self.var_use_processed
-        )
-        self.chk_use_processed.grid(row=0, column=2, padx=(12, 0))
-
         # Buttons
         btns = ttk.Frame(frm)
         btns.grid(row=10, column=0, columnspan=2, sticky="e", **pad)
 
         self.btn_configure = ttk.Button(btns, text="Configure", command=self.on_configure)
-        self.btn_list = ttk.Button(btns, text="List", command=self.on_list)
-        self.btn_load = ttk.Button(btns, text="Load", command=self.on_load)
+        self.btn_list = ttk.Button(btns, text="List Files", command=self.on_list)
+        self.btn_load = ttk.Button(btns, text="Download", command=self.on_load)
 
         self.btn_configure.grid(row=0, column=0, padx=6)
         self.btn_list.grid(row=0, column=1, padx=6)
@@ -542,20 +379,15 @@ class CameraUrlTool(tk.Tk):
 
         self.btn_video = ttk.Button(btns, text="Make Video", command=self.on_make_video)
         self.btn_video.grid(row=0, column=3, padx=6)
-
-        self.btn_process = ttk.Button(btns, text="Process FITS", command=self.on_process_fits)
-        self.btn_process.grid(row=0, column=4, padx=6)
-
         #  self.btn_video.config(state=state)
+
         # React to date changes so day dropdown stays valid
         self.cmb_year.bind("<<ComboboxSelected>>", lambda e: self._on_year_month_changed())
         self.cmb_month.bind("<<ComboboxSelected>>", lambda e: self._on_year_month_changed())
 
-        for cmb in (self.cmb_camera, self.cmb_size, self.cmb_day):
+        # Update URL preview when dropdown changes
+        for cmb in (self.cmb_camera, self.cmb_size, self.cmb_format, self.cmb_day):
             cmb.bind("<<ComboboxSelected>>", lambda e: self._set_url_preview())
-
-        self.cmb_format.bind("<<ComboboxSelected>>",
-                             lambda e: (self._set_url_preview(), self._update_format_dependent_buttons()))
 
     def _select_all_files(self, _event=None):
         self.lst_files.select_set(0, "end")
@@ -567,25 +399,9 @@ class CameraUrlTool(tk.Tk):
         self.btn_list.config(state=state)
         self.btn_load.config(state=state)
 
+        # Only if the button exists
         if hasattr(self, "btn_video") and self.btn_video is not None:
             self.btn_video.config(state=state)
-
-        if hasattr(self, "btn_process") and self.btn_process is not None:
-            self.btn_process.config(state=state)
-
-        # Re-apply format rule when re-enabling
-        if enabled:
-            self._update_format_dependent_buttons()
-
-    def _update_format_dependent_buttons(self):
-        fmt = self.var_format.get().strip().lower()
-        # Checkbox only meaningful for FITS
-        if hasattr(self, "chk_use_processed") and self.chk_use_processed is not None:
-            self.chk_use_processed.config(state=("normal" if fmt == "fits" else "disabled"))
-
-        # Process button only makes sense for FITS
-        if hasattr(self, "btn_process") and self.btn_process is not None:
-            self.btn_process.config(state=("normal" if fmt == "fits" else "disabled"))
 
     def _on_year_month_changed(self):
         self._refresh_day_options()
@@ -678,40 +494,35 @@ class CameraUrlTool(tk.Tk):
 
             filenames = fetch_directory_listing(url)
 
+            # Filter by expected file type
             fmt = self.var_format.get().strip().lower()
-
-            # 1) Filter by file type
-            if fmt == "jpg":
+            if "jpg" in fmt:
                 filenames = [f for f in filenames if f.lower().endswith((".jpg", ".jpeg"))]
-            elif fmt == "fits":
-                # Be liberal: some servers publish compressed FITS
-                fits_exts = (".fts", ".fits", ".fit", ".fts.gz", ".fits.gz")
-                filenames = [f for f in filenames if f.lower().endswith(fits_exts)]
-            else:
-                raise ValueError(f"Unknown format: {fmt}")
+            elif "fits" in fmt:
+                filenames = [f for f in filenames if f.lower().endswith((".fts", ".fits"))]
 
-            print("DEBUG after type-filter (first 20):", filenames[:20])
-
-            # 2) Filter by selected size ONLY for JPG
-            if fmt == "jpg":
+            # Filter by selected size (ONLY for JPGs; FITS don't have _512/_1024)
+            if "fits" not in fmt:
                 size = self.var_size.get().strip()
                 filenames = [f for f in filenames if filename_matches_size(f, size)]
 
-                if not filenames:
-                    self._set_files([])
-                    messagebox.showinfo(
-                        "No files found",
-                        f"No JPG files match image size {size} for this date.\n\n"
-                        "Try switching the image size dropdown (512 ↔ 1024) and clicking List again."
-                    )
-                    self._set_status(f"0 files match size {size}")
-                    self.progress["value"] = 0
-                    self.progress["maximum"] = 1
-                    return
+            if not filenames:
+                self._set_files([])
 
-            # For FITS: do NOT size-filter (names usually don't include 512/1024)
+                # Different warning for FITS vs JPG
+                if "fits" in fmt:
+                    msg = "No files found for this date and FITS format."
+                else:
+                    size = self.var_size.get().strip()
+                    msg = (f"No files match image size {size} for this date.\n\n"
+                           "Try switching the image size dropdown (512 ↔ 1024) and clicking List again.")
 
-            # 3) Update UI listbox
+                messagebox.showinfo("No files found", msg)
+                self._set_status("0 files found")
+                self.progress["value"] = 0
+                self.progress["maximum"] = 1
+                return
+
             self._set_files(filenames)
             self._set_status(f"{len(filenames)} file(s) listed")
             self.progress["value"] = 0
@@ -737,6 +548,20 @@ class CameraUrlTool(tk.Tk):
 
             camera, size, fmt, yyyy, mm, dd = self._get_inputs()
 
+            # --- Estimate Size & Warn ---
+            file_count = len(selection)
+            # Rough estimates: fits ~ 2 MB, jpg ~ 380 KB
+            size_per_file_mb = 2.0 if "fits" in fmt.lower() else 0.38
+            total_est_mb = file_count * size_per_file_mb
+
+            msg = (f"You are about to download {file_count} files.\n"
+                   f"Estimated total size: {total_est_mb:.1f} MB\n\n"
+                   "Proceed?")
+
+            if not messagebox.askokcancel("Confirm Download", msg):
+                return
+            # ----------------------------
+
             base_url = self._get_url_text().strip()
             if not base_url:
                 base_url = build_url(camera, size, fmt, yyyy, mm, dd)
@@ -746,15 +571,14 @@ class CameraUrlTool(tk.Tk):
                 self._set_url_text(base_url)
 
             filenames = [self.lst_files.get(i) for i in selection]
-            fmt = self.var_format.get().strip().lower()
 
-            # Only enforce size token matching for JPG
-            if fmt == "jpg":
+            # Only validate size for JPGs (FITS don't use 512/1024 in filename)
+            if "fits" not in fmt:
                 size = self.var_size.get().strip()
                 bad = [f for f in filenames if not filename_matches_size(f, size)]
                 if bad:
                     messagebox.showerror(
-                        "Load",
+                        "Make Video",
                         f"Your selection includes files that don't match the selected size ({size}).\n"
                         "Change the size dropdown or re-list and select again.\n\n"
                         f"Examples:\n" + "\n".join(bad[:5])
@@ -784,90 +608,6 @@ class CameraUrlTool(tk.Tk):
             self._set_buttons_enabled(True)
             messagebox.showerror("Load error", str(ex))
 
-    def on_process_fits(self):
-        """
-        Process selected FITS files using the background-subtraction algorithm
-        and write processed PNGs into the download folder under _processed_png_frames.
-        """
-        if self._downloading:
-            messagebox.showinfo("Process FITS", "A download is currently running. Try again when it's finished.")
-            return
-
-        try:
-            fmt = self.var_format.get().strip().lower()
-            if fmt != "fits":
-                messagebox.showinfo("Process FITS",
-                                    "This processing button only supports FITS. Set Image format to 'fits'.")
-                return
-
-            selection = self.lst_files.curselection()
-            if not selection:
-                messagebox.showinfo("Process FITS",
-                                    "Select one or more FITS files first (Ctrl/Shift click, or Ctrl+A).")
-                return
-
-            camera, size, fmt, yyyy, mm, dd = self._get_inputs()
-            filenames = [self.lst_files.get(i) for i in selection]
-
-            # Safety: ensure selection matches chosen size
-
-            subfolder = build_download_subfolder(camera, fmt, yyyy, mm, dd)
-            dest_dir = DOWNLOAD_ROOT / subfolder
-
-            if not dest_dir.exists():
-                messagebox.showerror(
-                    "Process FITS",
-                    f"Download folder does not exist yet:\n{dest_dir}\n\nDownload files first (Load), then process."
-                )
-                return
-
-            self._set_buttons_enabled(False)
-            self._set_status("Processing FITS → PNG (background subtraction)...")
-
-            t = threading.Thread(
-                target=self._process_worker,
-                args=(dest_dir, filenames),
-                daemon=True
-            )
-            t.start()
-
-        except Exception as ex:
-            self._set_buttons_enabled(True)
-            messagebox.showerror("Process FITS error", str(ex))
-
-    def _process_worker(self, dest_dir: Path, filenames: list[str]):
-        try:
-            found_fits, saved, skipped, out_dir = process_fits_sequence_to_png(dest_dir, filenames)
-
-            def finish_ok():
-                self._set_buttons_enabled(True)
-                if found_fits == 0:
-                    self._set_status("No FITS selected.")
-                    messagebox.showinfo("Process FITS", "No FITS files were selected.")
-                    return
-
-                self._set_status(f"Processed PNGs saved: {saved} (skipped existing: {skipped})")
-                messagebox.showinfo(
-                    "Process FITS",
-                    f"Done.\n\n"
-                    f"FITS selected: {found_fits}\n"
-                    f"PNG saved: {saved}\n"
-                    f"Skipped (already existed): {skipped}\n\n"
-                    f"Output folder:\n{out_dir}"
-                )
-
-            self.after(0, finish_ok)
-
-        except Exception as ex:
-            err = str(ex)
-
-            def finish_fail(err=err):
-                self._set_buttons_enabled(True)
-                self._set_status("Processing failed")
-                messagebox.showerror("Process FITS error", err)
-
-            self.after(0, finish_fail)
-
     def on_make_video(self):
         """
         Build a video from the currently selected files (UI order),
@@ -886,9 +626,9 @@ class CameraUrlTool(tk.Tk):
             camera, size, fmt, yyyy, mm, dd = self._get_inputs()
             filenames = [self.lst_files.get(i) for i in selection]
             fps = int(self.var_fps.get())
-            fmt = self.var_format.get().strip().lower()
 
-            if fmt == "jpg":
+            # Only validate size for JPGs
+            if "fits" not in fmt:
                 size = self.var_size.get().strip()
                 bad = [f for f in filenames if not filename_matches_size(f, size)]
                 if bad:
@@ -910,13 +650,12 @@ class CameraUrlTool(tk.Tk):
                 )
                 return
 
-            use_processed = bool(self.var_use_processed.get())
             # Background worker so GUI doesn't freeze
             self._set_buttons_enabled(False)
             self._set_status("Creating video...")
             t = threading.Thread(
                 target=self._video_worker,
-                args=(dest_dir, filenames, camera, fmt, yyyy, mm, dd, fps, use_processed),
+                args=(dest_dir, filenames, camera, fmt, yyyy, mm, dd, fps),
                 daemon=True
             )
             t.start()
@@ -926,15 +665,10 @@ class CameraUrlTool(tk.Tk):
             messagebox.showerror("Make Video error", str(ex))
 
     def _video_worker(self, dest_dir: Path, filenames: list[str],
-                      camera: str, fmt: str, yyyy: int, mm: int, dd: int, fps: int,
-                      use_processed: bool):
+                      camera: str, fmt: str, yyyy: int, mm: int, dd: int, fps: int):
         try:
             # Choose a default fps for now (can become a dropdown later)
-            out = make_video_from_download(
-                dest_dir, filenames, camera, fmt, yyyy, mm, dd,
-                fps=fps,
-                use_processed_fits=use_processed
-            )
+            out = make_video_from_download(dest_dir, filenames, camera, fmt, yyyy, mm, dd, fps=fps)
 
             def finish_ok():
                 self._set_buttons_enabled(True)
@@ -944,14 +678,12 @@ class CameraUrlTool(tk.Tk):
             self.after(0, finish_ok)
 
         except subprocess.CalledProcessError as ex:
-            err = str(ex)
-            def finish_fail(err=err):
+            def finish_fail():
                 self._set_buttons_enabled(True)
                 self._set_status("Video creation failed")
                 messagebox.showerror(
                     "ffmpeg failed",
-                    "ffmpeg returned an error.\n"
-                    f"Details:\n\n{err}"
+                    "ffmpeg returned an error.\n\n"
                     "Common causes:\n"
                     "- ffmpeg not installed or not on PATH\n"
                     "- some frames missing / unreadable\n\n"
@@ -961,12 +693,10 @@ class CameraUrlTool(tk.Tk):
             self.after(0, finish_fail)
 
         except Exception as ex:
-            err = str(ex)
-
-            def finish_fail2(err=err):
+            def finish_fail2():
                 self._set_buttons_enabled(True)
                 self._set_status("Video creation failed")
-                messagebox.showerror("Make Video error", err)
+                messagebox.showerror("Make Video error", str(ex))
 
             self.after(0, finish_fail2)
 
@@ -1009,8 +739,6 @@ class CameraUrlTool(tk.Tk):
     def _update_progress_ui(self, idx: int, total: int, status: str):
         self.progress["value"] = idx
         self._set_status(f"{idx}/{total} - {status}")
-
-
 
 
 if __name__ == "__main__":
