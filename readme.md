@@ -28,6 +28,27 @@ This tool allows you to:
 - Deterministic folder and video naming
 
 ---
+## Useage
+
+lanch the app by cli: python.exe lasco_download.py
+A GUI application will appear.
+
+Configure the date, image forat, camera type and other fields as desired.
+
+- Click on the configure button to setup the URL.
+
+- Click on the list button to see the entire list of available files.
+
+- From the list of file, select those files you wish to use. Use Shift-Click or Shift-Control.
+
+- Click on the load button to download the selected files, becareful not to unselect the files.
+
+- After download is completed, select the frames per second speed for the video animation, the click
+on the make video button.
+
+- The video will be found in the downloads/YYYYMMDD_LASCO_cX_format/ subfolder.
+
+
 ## Requirements
 
 ### Python
