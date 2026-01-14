@@ -33,7 +33,7 @@ This tool allows you to:
 lanch the app by cli: python.exe lasco_download.py
 A GUI application will appear.
 
-Configure the date, image forat, camera type and other fields as desired.
+Configure the date, image format, camera type and other fields as desired.
 
 - Click on the configure button to setup the URL.
 
